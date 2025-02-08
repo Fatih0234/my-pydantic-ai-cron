@@ -1,5 +1,7 @@
 # PydanticAI running on cron with Github Actions Example
 
+[Accompanying Blog Post](https://christophergs.com/blog/pydantic-ai-example-github-actions)
+
 An example showing the power of PydanticAI as a CLI app. Fetches EV charging station
 data and compares against the price of Platinum to seek trading signals. No, the strategy
 doesn't work. Yes, it is fun.
