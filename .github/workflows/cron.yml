@@ -1,0 +1,51 @@
+name: "Scheduled Cron Jobs"
+
+on:
+  schedule:
+    # runs every week at 08:00 UTC
+    - cron: "0 8 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  run-ev-charging-growth:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+
+    - name: Install dependencies
+      run: |
+        uv sync
+
+    - name: Run EV Charging Growth correlation
+      working-directory: ${{ github.workspace }}  # Set working directory for this step
+      run: |
+        uv run python -m main --months 5 --metals-etf PPLT
+    
+    - name: Commit and push
+      run: |
+        # Configure Git with the GitHub Actions bot identity
+        git config --global user.name "github-actions"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        
+        # If data.csv was modified, let's commit it:
+        git add data.csv
+        git diff --cached --quiet && echo "No changes to commit" || (
+          git commit -m "chore: update data.csv"
+          git push
+        )
+
+    env:
+      OPENCHARGEMAP_API_KEY: ${{ secrets.OPENCHARGEMAP_API_KEY }}
+      MARKETSTACK_API_KEY: ${{ secrets.MARKETSTACK_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
