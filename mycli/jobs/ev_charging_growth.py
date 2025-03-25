@@ -177,7 +177,7 @@ async def run_ev_charging_growth(
         )
     )
 
-    model = OpenAIModel("gpt-4o", api_key=settings.OPENAI_API_KEY)
+    model = OpenAIModel("gpt-4o-mini", api_key=settings.OPENAI_API_KEY)
     agent = create_agent(model)
 
     prompt = f"""
