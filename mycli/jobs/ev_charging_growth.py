@@ -3,6 +3,7 @@ from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 from collections import defaultdict
+import numpy as np
 
 import httpx
 from pydantic import BaseModel, Field, ConfigDict
@@ -47,6 +48,8 @@ async def fetch_ev_charger_growth(ctx: RunContext[None], months: int) -> List[fl
     base_url = "https://api.openchargemap.io/v3/poi"
     days_ago = months * 30
     since_date = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+    
+    console.print(f"[cyan]Fetching EV data since: {since_date}")
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
@@ -64,6 +67,8 @@ async def fetch_ev_charger_growth(ctx: RunContext[None], months: int) -> List[fl
         response.raise_for_status()
         data = response.json()
 
+    console.print(f"[cyan]Received {len(data)} charging points from API")
+    
     monthly_counts = defaultdict(int)
     now_utc = datetime.now(timezone.utc)
     cutoff_dt = now_utc - timedelta(days=days_ago)
@@ -78,25 +83,32 @@ async def fetch_ev_charger_growth(ctx: RunContext[None], months: int) -> List[fl
             except ValueError:
                 continue
 
-    return [
+    result = [
         float(monthly_counts.get(
             (now_utc - timedelta(days=30 * (months - 1 - i))).strftime("%Y-%m"),
             0
         ))
         for i in range(months)
     ]
+    
+    console.print(f"[cyan]Processed EV data by month: {result}")
+    return result
 
 
 async def fetch_metals_prices(ctx: RunContext[None], symbol: str, months: int) -> List[float]:
     """Fetch monthly EOD prices for a metals ETF from Marketstack."""
     base_url = "https://api.marketstack.com/v2/eod"
     now_utc = datetime.now(timezone.utc)
+    date_from = (now_utc - timedelta(days=months * 30)).strftime("%Y-%m-%d")
+    date_to = now_utc.strftime("%Y-%m-%d")
 
+    console.print(f"[magenta]Fetching {symbol} prices from {date_from} to {date_to}")
+    
     params = {
         "access_key": settings.MARKETSTACK_API_KEY,
         "symbols": symbol,
-        "date_from": (now_utc - timedelta(days=months * 30)).strftime("%Y-%m-%d"),
-        "date_to": now_utc.strftime("%Y-%m-%d"),
+        "date_from": date_from,
+        "date_to": date_to,
         "limit": 200,
         "sort": "ASC"
     }
@@ -109,11 +121,24 @@ async def fetch_metals_prices(ctx: RunContext[None], symbol: str, months: int) -
     if not (daily := payload.get("data")):
         raise ValueError(f"No data found for symbol {symbol}")
 
+    console.print(f"[magenta]Received {len(daily)} daily price points for {symbol}")
+    
     step = max(1, len(daily) // months)
     results = [daily[i]["close"] for i in range(0, len(daily), step)][:months]
 
     # Pad with last value if needed
-    return results + [results[-1]] * (months - len(results)) if results else []
+    final_results = results + [results[-1]] * (months - len(results)) if results else []
+    
+    console.print(f"[magenta]Processed {symbol} prices (step={step}): {final_results}")
+    return final_results
+
+
+def calculate_correlation(x: List[float], y: List[float]) -> float:
+    """Calculate Pearson correlation coefficient between two lists."""
+    if len(x) != len(y) or len(x) < 2:
+        return 0.0
+        
+    return np.corrcoef(x, y)[0, 1]
 
 
 def finalize_result(data: EvChargingGrowthResult) -> EvChargingGrowthResult:
@@ -159,6 +184,9 @@ async def run_ev_charging_growth(
     Returns:
         Analysis result if successful, None if already fetched today
     """
+    console.print(f"[yellow]Current UTC time: {datetime.now(timezone.utc).isoformat()}")
+    console.print(f"[yellow]Current local time: {datetime.now().isoformat()}")
+    
     storage_path = Path(settings.STORAGE_FILE_PATH)
 
     if already_fetched_today(storage_path, metals_etf):
@@ -177,15 +205,58 @@ async def run_ev_charging_growth(
         )
     )
 
-    model = OpenAIModel("gpt-4o", api_key=settings.OPENAI_API_KEY)
+    # Fetch the data directly first for calculation
+    ctx = RunContext(
+        model=OpenAIModel("gpt-4o-mini", api_key=settings.OPENAI_API_KEY),
+        usage=None,
+        prompt="Debug data fetch",
+        deps=None
+    )
+    
+    ev_data = await fetch_ev_charger_growth(ctx, months)
+    metals_data = await fetch_metals_prices(ctx, metals_etf, months)
+    
+    # Calculate correlation deterministically
+    correlation = calculate_correlation(ev_data, metals_data)
+    console.print(f"[green]Calculated correlation: {correlation:.3f}")
+    
+    # Now proceed with the agent-based analysis, but only for the recommendation
+    model = OpenAIModel("gpt-4o-mini", api_key=settings.OPENAI_API_KEY)
     agent = create_agent(model)
 
+    # Load historical correlations for context
+    historical_context = ""
+    if storage_path.exists():
+        with storage_path.open("r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+            if rows:
+                historical_context = "Previous correlation measurements:\n"
+                for row in rows[-5:]:  # Show last 5 analyses for better trend visibility
+                    if len(row) >= 3:
+                        date_str = row[0][:19]  # date and time part till seconds
+                        symbol = row[1]
+                        corr = float(row[2])
+                        historical_context += f"- {date_str}: {symbol} correlation was {corr:.3f}\n"
+
     prompt = f"""
-    Analyze correlation between monthly EV growth and {metals_etf} prices over {months} months:
-    1) Call fetch_ev_charger_growth({months})
-    2) Call fetch_metals_prices(symbol={metals_etf}, {months})
-    3) Compute correlation
-    4) Return JSON with (metals_etf_symbol, correlation, recommendation)
+    Given the following data:
+    - EV charging growth data over {months} months: {ev_data}
+    - {metals_etf} price data over the same period: {metals_data}
+    - The calculated correlation coefficient is: {correlation:.6f}
+    
+    {historical_context}
+    
+    Generate a concise, data-driven investment recommendation based on this correlation.
+    Consider both the current correlation and any trends visible in historical data.
+    Focus on what this correlation suggests about the relationship between EV charging growth and this metals ETF.
+    
+    You MUST return a JSON object with exactly these fields:
+    {{
+        "metals_etf_symbol": "{metals_etf}",
+        "correlation": {correlation},
+        "recommendation": "Your recommendation here"
+    }}
     """
 
     result = await agent.run(prompt)

@@ -26,7 +26,7 @@ jobs:
     - name: Run EV Charging Growth correlation
       working-directory: ${{ github.workspace }}  # Set working directory for this step
       run: |
-        python -m main --months 5 --metals-etf PPLT
+        python -m main --months 3 --metals-etf PPLT
     
     - name: Commit and push
       run: |
