@@ -205,23 +205,7 @@ async def run_ev_charging_growth(
         )
     )
 
-    # Fetch the data directly first for calculation
-    ctx = RunContext(
-        model=OpenAIModel("gpt-4o-mini", api_key=settings.OPENAI_API_KEY),
-        usage=None,
-        prompt="Debug data fetch",
-        deps=None
-    )
-    
-    ev_data = await fetch_ev_charger_growth(ctx, months)
-    metals_data = await fetch_metals_prices(ctx, metals_etf, months)
-    
-    # Calculate correlation deterministically
-    correlation = calculate_correlation(ev_data, metals_data)
-    console.print(f"[green]Calculated correlation: {correlation:.3f}")
-    
-    # Now proceed with the agent-based analysis, but only for the recommendation
-    model = OpenAIModel("gpt-4o-mini", api_key=settings.OPENAI_API_KEY)
+    model = OpenAIModel("gpt-4o", api_key=settings.OPENAI_API_KEY)
     agent = create_agent(model)
 
     # Load historical correlations for context
